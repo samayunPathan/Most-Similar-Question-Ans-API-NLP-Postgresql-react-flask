@@ -1,12 +1,14 @@
-from flask import Flask,jsonify
+from flask import Flask,jsonify,request
 from flask_sqlalchemy import SQLAlchemy
-from flask import Flask, render_template
+from flask import Flask
+import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-import nltk
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import psycopg2
 
-# Download NLTK data 
 nltk.download('punkt')
 nltk.download('stopwords')
 nltk.download('wordnet')
@@ -30,98 +32,74 @@ class QA(db.Model):
 
 
 
-
-
 def preprocess_text(text):
-    # Tokenization
     tokens = word_tokenize(text)
-    # Removing stopwords
     stop_words = set(stopwords.words('english'))
     filtered_tokens = [word.lower() for word in tokens if word.lower() not in stop_words]
-    # Lemmatization
+    # Lemmatize words
     lemmatizer = WordNetLemmatizer()
     lemmatized_tokens = [lemmatizer.lemmatize(word) for word in filtered_tokens]
-    return lemmatized_tokens
-
-
-def get_similar_question_from_database(input_question):
-    input_question_tokens = preprocess_text(input_question)
-
-    # Retrieve all questions from the database
-    all_questions = QA.query.all()
-
-    # Preprocess database questions
-    database_question_tokens = [preprocess_text (qa_pair.Ques) for qa_pair in all_questions]
-
-    # Manual similarity check (replace with your desired logic)
-    similar_question_answer_pairs = []
-    for qa, db_tokens in zip(all_questions, database_question_tokens):
-        # Example similarity check (replace with more sophisticated logic)
-        if any(word in input_question_tokens for word in db_tokens):
-                similar_question_answer_pairs.append(qa.Ans)
-
-        return {'similar_pairs': similar_question_answer_pairs}
-
-#API Route
-@app.route("/api")
-def render_similar_question_answer_pairs():
-    # if request.method == 'POST':
-    #     input_question = request.POST['question']
-    # else:
-    input_question = "whats"
-
-    similar_question_answer_pairs = get_similar_question_from_database(input_question)
-    return jsonify(similar_question_answer_pairs)
+    # Join the tokens back into single string
+    preprocessed_text = ' '.join(lemmatized_tokens)
+    return preprocessed_text
 
 
 
+def find_most_similar_question_answer(input_question):
+    # Preprocess the input question
+    preprocessed_input = preprocess_text(input_question)
+    # Connect to the PostgreSQL database
+    conn = psycopg2.connect(
+        dbname='QA',
+        user='postgres',
+        password='1234',
+        host='localhost',
+        
+    )
+    cur = conn.cursor()
+ 
+    qa_pairs=QA.query.all()
+    
+    # Create a list to store preprocessed questions
+    preprocessed_questions = []
+    for qa_pair in qa_pairs:
+        preprocessed_question = preprocess_text(qa_pair.Ques)
+        preprocessed_questions.append(preprocessed_question)
+    
+    # Add input question to the list of preprocessed questions
+    preprocessed_questions.append(preprocessed_input)
+    
+    # Convert preprocessed questions into TF-IDF vectors
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(preprocessed_questions)
+    
+    # Calculate cosine similarity between the input question and all questions in the database
+    similarities = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[:-1])
+    
+    # Find the index of the most similar question
+    most_similar_index = similarities.argmax()
+    
+    # Retrieve the most similar question-answer pair
+    most_similar_question = qa_pairs[most_similar_index].Ques
+    most_similar_answer = qa_pairs[most_similar_index].Ans
+    
+    # Close the database connection
+    cur.close()
+    conn.close()
+    
+    return most_similar_question, most_similar_answer
 
-# def get_qa_data():
-#     try:
-#         # Query all records from the QA table
-#         qa_records = QA.query.all()
 
-#         # Initialize an empty list to store the results
-#         qa_data = []
-
-#         # Iterate over the records and extract the necessary information
-#         for record in qa_records:
-#             qa_data.append({
-#                 'id': record.id,
-#                 'question': record.Ques,
-#                 'answer': record.Ans
-#             })
-
-#         return qa_data
-#     except Exception as e:
-#         # Handle any exceptions, such as database errors
-#         print(f"An error occurred: {e}")
-#         return None
-
-# def submit():
-#   fname= request.form['fname']
-#   lname=request.form['lname']
-#   pet=request.form['pets']
-
-#   student=Student(fname,lname,pet)
-#   db.session.add(student)
-#   db.session.commit()
-
-  #fetch a certain student2
-#   studentResult=db.session.query(QA).filter(QA.id==1)
-#   for result in studentResult:
-#     print(result.Ques)
-
-#   return render_template('success.html', data=fname)
+@app.route('/api', methods=['POST'])
   
-
-@app.route("/members")
-# def get_members():
-#     members = ['members1', 'members2', 'members3']
-#     return {'members': members}, 200, {'Content-Type': 'application/json'}
-
-def menbers():
-    return {'members':['members1','members2','members3']}
+def find_similar_question_answer():
+    input_question = request.json['question']
+    most_similar_question, most_similar_answer = find_most_similar_question_answer(input_question)
+    ques_pairs = {
+        'most_similar_question': most_similar_question,
+        'most_similar_answer': most_similar_answer
+    }
+    return jsonify(ques_pairs)
 
 
 
